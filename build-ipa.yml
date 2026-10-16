@@ -1,0 +1,76 @@
+﻿name: Build IPA
+
+# 无需 Mac：推上 GitHub 后在 Actions 页面点一下即可出包
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-ipa:
+    name: Build unsigned IPA for TrollStore
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare sources
+        run: |
+          set -euo pipefail
+          # 兼容两种上传方式：上传工程目录，或只上传 TrollDetect-src.zip
+          if ls ./*.zip >/dev/null 2>&1; then
+            rm -rf _src
+            mkdir -p _src
+            unzip -q -o ./*.zip -d _src
+            if [ -d "_src/TrollDetect" ]; then
+              cp -R _src/TrollDetect/. ./
+            else
+              cp -R _src/. ./
+            fi
+            rm -rf _src
+          fi
+          echo "--- sources ---"
+          ls -1
+          test -f TrollDetect.xcodeproj/project.pbxproj || { echo "project.pbxproj not found"; exit 1; }
+
+      - name: Select Xcode
+        run: |
+          xcodebuild -version
+          for v in Xcode_16.4 Xcode_16.3 Xcode_16.2 Xcode_16.1 Xcode_16; do
+            if [ -d "/Applications/$v.app" ]; then
+              sudo xcode-select -s "/Applications/$v.app"
+              echo "using $v"
+              break
+            fi
+          done
+          xcodebuild -version
+
+      - name: Build (unsigned, device SDK)
+        run: |
+          set -o pipefail
+          xcodebuild -project TrollDetect.xcodeproj -target TrollDetect -configuration Release -sdk iphoneos -derivedDataPath build/DerivedData CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO build
+
+      - name: Package Payload to IPA
+        run: |
+          set -euo pipefail
+          APP="build/DerivedData/Build/Products/Release-iphoneos/TrollDetect.app"
+          if [ ! -d "$APP" ]; then
+            echo "Build product missing: $APP" >&2
+            exit 1
+          fi
+          rm -rf build/Payload
+          mkdir -p build/Payload
+          cp -R "$APP" build/Payload/
+          ( cd build/Payload && zip -qry ../TrollDetect.ipa . )
+          ls -lh build/TrollDetect.ipa
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: TrollDetect-IPA
+          path: build/TrollDetect.ipa
+          if-no-files-found: error
+          retention-days: 30
